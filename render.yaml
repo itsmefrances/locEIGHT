@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: loceight
+    runtime: python
+    plan: free  # spins down when idle; first request after a nap takes ~1 min. "starter" avoids that.
+    buildCommand: "true"
+    startCommand: python -m loceight serve
+    healthCheckPath: /healthz
+    envVars:
+      - key: LOCEIGHT_TOKEN
+        generateValue: true
+      - key: EIGHT_PASSWORD
+        sync: false
+      - key: LOCEIGHT_CONFIG_JSON
+        sync: false

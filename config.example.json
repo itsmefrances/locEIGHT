@@ -1,0 +1,15 @@
+{
+  "radius_miles": 30,
+  "hysteresis_miles": 5,
+  "when_away_from_all": "away",
+  "max_accuracy_miles": 3,
+
+  "accounts": {
+    "me": { "email": "you@example.com", "password_env": "EIGHT_PASSWORD" }
+  },
+
+  "beds": [
+    { "name": "City",    "lat": 40.7128, "lon": -74.0060, "account": "me", "device_id": "REPLACE_ME", "side": "solo" },
+    { "name": "Country", "lat": 41.9270, "lon": -73.9974, "account": "me", "device_id": "REPLACE_ME", "side": "solo" }
+  ]
+}
