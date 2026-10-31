@@ -46,7 +46,6 @@ class Config:
     beds: list[Bed]
     state_file: str = "state.json"
     redis_url: str | None = None
-    max_accuracy_miles: float | None = None
 
 
 def _password(raw: dict) -> str:
@@ -86,7 +85,6 @@ def parse(data: dict) -> Config:
     if when not in ("away", "unchanged"):
         raise ConfigError("when_away_from_all must be 'away' or 'unchanged'")
 
-    max_acc = data.get("max_accuracy_miles")
     return Config(
         away_miles=float(data.get("away_miles", 50)),
         switch_margin_miles=float(data.get("switch_margin_miles", 10)),
@@ -96,7 +94,6 @@ def parse(data: dict) -> Config:
         beds=beds,
         state_file=os.environ.get("LOCEIGHT_STATE_FILE", data.get("state_file", "state.json")),
         redis_url=os.environ.get("REDIS_URL") or data.get("redis_url"),
-        max_accuracy_miles=float(max_acc) if max_acc is not None else None,
     )
 
 

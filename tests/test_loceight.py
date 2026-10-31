@@ -10,7 +10,7 @@ from http.server import ThreadingHTTPServer
 from loceight import config
 from loceight.controller import Controller, decide
 from loceight.geo import distance_miles
-from loceight.server import make_handler, parse_location
+from loceight.server import make_handler
 from loceight.state import RedisStore
 
 NYC = (40.7836, -73.9805)  # 2211 Broadway
@@ -189,12 +189,6 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual(r.actions, ["Me: home at City (left side)", "Dani: home at City (right side)"])
         self.assertEqual(ctl.status(), {})
 
-    def test_poor_accuracy_skipped(self):
-        ctl, calls = controller(make_cfg(max_accuracy_miles=2))
-        r = ctl.update(*NYC, accuracy_miles=10)
-        self.assertIsNotNone(r.skipped)
-        self.assertEqual(calls, [])
-
     def test_password_env(self):
         os.environ["TEST_PW"] = "secret"
         cfg = make_cfg(account={"email": "e", "password_env": "TEST_PW"})
@@ -308,46 +302,35 @@ class ServerTest(unittest.TestCase):
         self.httpd.shutdown()
         self.httpd.server_close()
 
-    def post(self, body, token=TOKEN, path="/location"):
-        req = urllib.request.Request(
-            self.base + path,
-            data=json.dumps(body).encode(),
-            method="POST",
-            headers={"authorization": f"Bearer {token}", "content-type": "application/json"},
-        )
-        with urllib.request.urlopen(req) as resp:
+    def get(self, path):
+        with urllib.request.urlopen(self.base + path) as resp:
             return json.loads(resp.read())
 
+    def loc(self, lat, lon, token=TOKEN, extra=""):
+        return self.get(f"/location?token={token}&lat={lat}&lon={lon}{extra}")
+
     def test_location(self):
-        out = self.post({"lat": NYC[0], "lon": NYC[1]})
+        out = self.loc(*NYC)
         self.assertEqual(out["home"], "City")
         self.assertEqual(self.calls, HOME_CITY)
+        self.assertEqual(self.get(f"/status?token={self.TOKEN}")["home"], "City")
 
-    def test_owntracks(self):
-        self.assertEqual(self.post({"_type": "location", "lat": HAMPTONS[0], "lon": HAMPTONS[1], "acc": 20}), [])
-        self.assertEqual(self.post({"_type": "transition"}), [])
-        self.assertEqual(self.calls, HOME_BEACH)
+    def test_rejects_bad_or_missing_token(self):
+        for path in (f"/location?token=wrong&lat=0&lon=0", "/location?lat=0&lon=0", "/status"):
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                self.get(path)
+            self.assertEqual(cm.exception.code, 401)
 
-    def test_rejects_bad_token(self):
-        with self.assertRaises(urllib.error.HTTPError) as cm:
-            self.post({"lat": 0, "lon": 0}, token="wrong")
-        self.assertEqual(cm.exception.code, 401)
+    def test_bad_coordinates(self):
+        for bad in ("lat=abc&lon=1", "lat=100&lon=0", "lon=1"):
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                self.get(f"/location?token={self.TOKEN}&{bad}")
+            self.assertEqual(cm.exception.code, 400)
 
-    def test_query_token_and_healthz(self):
-        with urllib.request.urlopen(f"{self.base}/healthz") as r:
-            self.assertEqual(json.loads(r.read()), {"ok": True})
-        url = f"{self.base}/location?lat={NYC[0]}&lon={NYC[1]}&token={self.TOKEN}&dry_run=1"
-        with urllib.request.urlopen(url) as r:
-            self.assertEqual(json.loads(r.read())["home"], "City")
+    def test_dry_run_and_healthz(self):
+        self.assertEqual(self.get("/healthz"), {"ok": True})
+        self.assertEqual(self.loc(*NYC, extra="&dry_run=1")["home"], "City")
         self.assertEqual(self.calls, [])
-
-
-class ParseTest(unittest.TestCase):
-    def test_parse(self):
-        lat, lon, acc = parse_location({"latitude": "1.5", "longitude": "2", "accuracy_m": 1609.344})
-        self.assertEqual((lat, lon, acc), (1.5, 2.0, 1.0))
-        with self.assertRaises(ValueError):
-            parse_location({"lat": 100, "lon": 0})
 
 
 if __name__ == "__main__":

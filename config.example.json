@@ -3,7 +3,6 @@
   "switch_margin_miles": 10,
   "hysteresis_miles": 5,
   "when_away_from_all": "away",
-  "max_accuracy_miles": 3,
   "account": {
     "email": "you@example.com",
     "password_env": "EIGHT_PASSWORD"

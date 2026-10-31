@@ -31,7 +31,7 @@ It goes by your phone's location only. Dani's side follows yours. One Eight Slee
 **Make it run automatically.** Go to the **Automation** tab and tap **+**. Create these two automations, choosing **Run Immediately** for each:
 
 - **Charger → Is Connected → Update Beds.** This runs every night when you plug in your phone.
-- **Arrive → (each home) → Update Beds.** This is optional and switches the beds as you pull in.
+- **Arrive → a spot about 30–40 minutes before each home → Update Beds.** Drag the circle as large as it goes. This switches the beds early enough for them to reach temperature. Good spots are Thruway exit 17 (Newburgh) on the way to Accord, and the Mario Cuomo Bridge or Thruway exit 15 (Suffern) on the way to NYC. Because the service always picks the closer home, passing a spot in the other direction does nothing.
 
 That's it. Repeated runs in the same place do nothing, so it's fine that these fire often.
 
@@ -60,7 +60,6 @@ See `config.example.json`. Only the beds you list are managed, so leave the gues
 | `switch_margin_miles` | 10 | How much closer the other bed must be before switching to it |
 | `hysteresis_miles` | 5 | Extra distance before going from home to away |
 | `when_away_from_all` | `"away"` | `"away"` or `"unchanged"` when you're near no bed |
-| `max_accuracy_miles` | none | Ignore location readings less accurate than this |
 
 Environment variables:
 
@@ -82,12 +81,11 @@ python -m unittest discover -s tests
 
 ### Endpoints
 
-All endpoints except `/healthz` need the token. Send it as `Authorization: Bearer <token>`, as the password in basic auth, or as `?token=`.
+Every endpoint except `/healthz` needs `?token=<LOCEIGHT_TOKEN>`.
 
-- `POST /location` takes `{"lat": .., "lon": ..}`. OwnTracks payloads are also accepted. Add `?dry_run=1` to preview without changing anything.
-- `GET /location?lat=..&lon=..` does the same thing.
-- `GET /status`
-- `GET /healthz`
+- `GET /location?token=..&lat=..&lon=..` applies a location. The iPhone shortcut calls this. Add `&dry_run=1` to preview without changing anything.
+- `GET /status?token=..` shows the last known home, distances and any errors.
+- `GET /healthz` is a liveness check.
 
 ### Caveat
 

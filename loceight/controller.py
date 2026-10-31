@@ -34,7 +34,6 @@ class Result:
     changed: bool = False
     actions: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
-    skipped: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -43,7 +42,6 @@ class Result:
             "distances_miles": {k: round(v, 1) for k, v in self.distances.items()},
             "actions": self.actions,
             "errors": self.errors,
-            "skipped": self.skipped,
         }
 
 
@@ -164,23 +162,18 @@ class Controller:
         self,
         lat: float,
         lon: float,
-        accuracy_miles: float | None = None,
         dry_run: bool = False,
         force: bool = False,
     ) -> Result:
         with self._lock:
-            return self._update(lat, lon, accuracy_miles, dry_run, force)
+            return self._update(lat, lon, dry_run, force)
 
-    def _update(self, lat, lon, accuracy_miles, dry_run, force) -> Result:
+    def _update(self, lat, lon, dry_run, force) -> Result:
         state = self.store.load()
         previous = state.get("home")
         decision = decide(self.cfg, lat, lon, previous)
         result = Result(home=decision.home, distances=decision.distances)
 
-        limit = self.cfg.max_accuracy_miles
-        if limit is not None and accuracy_miles is not None and accuracy_miles > limit:
-            result.skipped = f"location accuracy {accuracy_miles:.1f} mi is worse than {limit} mi"
-            return result
 
         first_run = "home" not in state
         result.changed = first_run or decision.home != previous
