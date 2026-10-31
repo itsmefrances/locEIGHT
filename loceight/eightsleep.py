@@ -31,7 +31,9 @@ TIMEOUT = 20
 
 
 class EightSleepError(RuntimeError):
-    pass
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 class EightSleep:
@@ -57,7 +59,7 @@ class EightSleep:
             if e.code == 401 and auth:
                 self._token = None  # force a fresh login on the next call
             detail = e.read().decode(errors="replace")[:300]
-            raise EightSleepError(f"{method} {url} -> HTTP {e.code}: {detail}") from None
+            raise EightSleepError(f"{method} {url} -> HTTP {e.code}: {detail}", e.code) from None
         except urllib.error.URLError as e:
             raise EightSleepError(f"{method} {url} failed: {e.reason}") from None
         return json.loads(raw) if raw.strip() else None
@@ -105,6 +107,22 @@ class EightSleep:
 
     def household_current_set(self) -> dict:
         return self._http("GET", f"{APP_API_URL}/household/users/{self._uid()}/current-set")
+
+    def set_current_set(self, set_id: str, user_id: str | None = None) -> None:
+        """Make a household "set" (one home's Pod) the active one for a person.
+
+        This is how the app switches between Pods on a multi-Pod account."""
+        uid = user_id or self._uid()
+        self._http("PUT", f"{APP_API_URL}/household/users/{uid}/current-set", {"setId": set_id})
+
+    def set_ids_by_device(self) -> dict[str, str]:
+        out = {}
+        for household in self.household_summary().get("households", []):
+            for pod_set in household.get("sets", []):
+                for dev in pod_set.get("devices", []):
+                    if isinstance(dev, dict) and dev.get("deviceId"):
+                        out[dev["deviceId"]] = pod_set.get("setId")
+        return out
 
     def household_device_ids(self) -> list[str]:
         ids = []

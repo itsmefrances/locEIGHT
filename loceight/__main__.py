@@ -24,8 +24,11 @@ def log_devices(cfg) -> None:
         current = (client.me().get("currentDevice") or {}).get("id")
         try:
             summary = client.household_summary()
-            log.info("Household summary: %s", json.dumps(summary)[:4000])
-            log.info("Household current set: %s", json.dumps(client.household_current_set())[:1500])
+            for household in summary.get("households", []):
+                for pod_set in household.get("sets", []):
+                    log.info("Set %r setId=%s devices=%s", pod_set.get("setName"), pod_set.get("setId"),
+                             [d.get("deviceId") for d in pod_set.get("devices", []) if isinstance(d, dict)])
+            log.info("Active set: %s", client.household_current_set().get("setId"))
             ids = client.household_device_ids()
         except Exception as e:
             log.error("could not read household (%s); falling back to users/me", e)

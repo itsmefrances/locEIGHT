@@ -49,6 +49,9 @@ class FakeClient:
     def __init__(self, log, failing=(), devices=DEVICES):
         self.log, self.failing, self.devices = log, failing, devices
 
+    def set_ids_by_device(self):
+        return {}
+
     def device(self, device_id):
         return self.devices[device_id]
 
@@ -206,6 +209,32 @@ class ControllerTest(unittest.TestCase):
         ctl.update(*NYC)
         # Dani has no side on the City bed, so she is set away rather than left on Beach.
         self.assertEqual(calls, [("Me", "dev-city", "solo"), ("Me", "home"), ("Dani", "away")])
+
+
+class HouseholdSwitchTest(unittest.TestCase):
+    def test_prefers_household_set_and_falls_back(self):
+        from loceight.eightsleep import EightSleepError
+
+        calls = []
+
+        class C(FakeClient):
+            refuse = False
+
+            def set_ids_by_device(self):
+                return {"dev-city": "set-city", "dev-beach": "set-beach"}
+
+            def set_current_set(self, set_id, user_id):
+                if C.refuse:
+                    raise EightSleepError("nope", 404)
+                self.log.append((self.user_name(user_id), "set", set_id))
+
+        ctl = Controller(make_cfg(), lambda c: C(calls))
+        ctl.update(*NYC)
+        self.assertEqual(calls, [("Me", "set", "set-city"), ("Me", "home"), ("Dani", "set", "set-city"), ("Dani", "home")])
+        calls.clear()
+        C.refuse = True
+        ctl.update(*HAMPTONS)
+        self.assertEqual(calls, HOME_BEACH)
 
 
 class SideAssignmentTest(unittest.TestCase):

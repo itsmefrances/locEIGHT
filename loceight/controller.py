@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .config import Bed, Config
-from .eightsleep import EightSleep
+from .eightsleep import EightSleep, EightSleepError
 from .geo import distance_miles
 from .state import make_store
 
@@ -102,6 +102,7 @@ class Controller:
         self._client: EightSleep | None = None
         self._sleepers: dict[str, dict[str, str]] | None = None
         self._names: dict[str, str] = {}
+        self._set_ids: dict[str, str] | None = None
         self._lock = threading.Lock()
 
     @property
@@ -128,6 +129,28 @@ class Controller:
                 raise ValueError("no one is assigned to the managed beds")
             self._sleepers = found
         return self._sleepers
+
+    def make_active(self, bed: Bed, side: str, uid: str) -> str:
+        """Point a person at a bed. Prefer the household "current set" (what the
+        app uses on multi-Pod accounts); fall back to the older current-device
+        call if the account has no household or the call is refused."""
+        if self._set_ids is None:
+            try:
+                self._set_ids = self.client.set_ids_by_device()
+            except EightSleepError as e:
+                log.warning("household lookup failed (%s); using current-device", e)
+                self._set_ids = {}
+        set_id = self._set_ids.get(bed.device_id)
+        if set_id:
+            try:
+                self.client.set_current_set(set_id, uid)
+                return "household"
+            except EightSleepError as e:
+                if e.status not in (400, 404, 405):
+                    raise
+                log.warning("current-set refused (%s); falling back to current-device", e)
+        self.client.set_current_device(bed.device_id, side, uid)
+        return "device"
 
     def name(self, user_id: str) -> str:
         if user_id not in self._names:
@@ -202,8 +225,9 @@ class Controller:
                     continue
                 result.actions.append(f"{who}: home at {bed.name} ({sides[bed.name]} side)")
                 if not dry_run:
-                    self.client.set_current_device(bed.device_id, sides[bed.name], uid)
+                    how = self.make_active(bed, sides[bed.name], uid)
                     self.client.set_away(False, uid)
+                    log.info("%s now active on %s via %s", who, bed.name, how)
             except Exception as e:  # keep going with the other person; retried next update
                 log.exception("switching %s failed", who)
                 result.errors.append(f"{who}: {e}")
