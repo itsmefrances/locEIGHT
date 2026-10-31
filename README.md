@@ -9,15 +9,15 @@ Automatically switches your Eight Sleep beds to match where you are.
 - **The guest bed is never touched.**
 - **Each change happens once, when you travel.** It doesn't keep checking or re-applying. If you change something by hand in the Eight Sleep app (for example, if you and Dani are apart for a night), it stays that way until your next trip.
 
-It goes by your phone's location only. Dani's settings follow yours.
+It goes by your phone's location only. Dani's side follows yours. One Eight Sleep login controls both sides.
 
 ## Getting it running
 
 | Step | Who | What |
 |---|---|---|
-| 1 | You | ✅ Done: home addresses received. |
+| 1 | You | ✅ Done: home addresses and Eight Sleep email received. |
 | 2 | Claude | Put the service online and connect it to Eight Sleep. |
-| 3 | You | Enter your and Dani's Eight Sleep passwords on the hosting site, in fields Claude points you to. They're never stored in this code. |
+| 3 | You | Enter the Eight Sleep password on the hosting site, in a field Claude points you to. It's never stored in this code. |
 | 4 | Claude | Find the device ID of each bed and check that everything lines up. |
 | 5 | You | Add one shortcut and two automations to your iPhone (below). It takes about 5 minutes. |
 
@@ -45,14 +45,14 @@ That's it. Repeated runs in the same place do nothing, so it's fine that these f
 - To avoid flip-flopping near the halfway point, a bed that is already home keeps that status until the other bed is `switch_margin_miles` (10) closer.
 - Once a bed is home, you're only counted as away when you're more than `away_miles + hysteresis_miles` (55) from every bed.
 - It remembers the last area you were in: near bed A, near bed B, or near neither. It only calls Eight Sleep when that area changes.
-  - **Arriving near a bed:** for each user, it makes that bed the account's active Pod, using the side that user is assigned to on that Pod, then turns away mode off.
-  - **Far from both:** it turns away mode on for each user.
+  - **Arriving near a bed:** one login controls everyone on the managed Pods. The left and right sides are read from each Pod. For each person, it makes that bed their active Pod on their side and turns away mode off. Anyone without a side on that bed is set to away.
+  - **Far from both:** it turns away mode on for everyone.
 - If a call fails, the area isn't recorded, so the next update retries it.
 - The memory lives in Redis when `REDIS_URL` is set (a free Render Key Value instance in `render.yaml`). Otherwise it uses a local `state.json` file. Hosting platforms wipe local files on restart, which would cause the change to be re-applied.
 
 ### Config
 
-See `config.example.json`. Only the beds you list are managed; leave the guest bed out. Get the `device_id` values with `python -m loceight devices`. The server also logs them at startup if any are missing. A user's side on each Pod is detected automatically. To override it, add `"sides": {"City": "left"}` to that user.
+See `config.example.json`. Only the beds you list are managed, so leave the guest bed out. To find the `device_id` values, run `python -m loceight devices`. The server also logs them at startup if any are missing. The log shows who sleeps on each side, which makes the guest bed easy to spot.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -65,7 +65,7 @@ See `config.example.json`. Only the beds you list are managed; leave the guest b
 Environment variables:
 
 - `LOCEIGHT_CONFIG_JSON`: the config itself.
-- `EIGHT_PASSWORD_*`: the passwords that `password_env` points to.
+- `EIGHT_PASSWORD`: the Eight Sleep password that `password_env` points to.
 - `LOCEIGHT_TOKEN`: the shared secret the phone sends.
 - `REDIS_URL`: where the memory is kept.
 

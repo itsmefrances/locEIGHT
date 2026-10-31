@@ -22,15 +22,17 @@ ALBANY = (42.6526, -73.7562)  # 64 mi from Accord -> away
 LA = (34.0522, -118.2437)
 
 
+DEVICES = {
+    "dev-city": {"leftUserId": "u-me", "rightUserId": "u-dani"},
+    "dev-beach": {"leftUserId": "u-dani", "rightUserId": "u-me"},
+}
+
+
 def make_cfg(**overrides):
     data = {
         "away_miles": 50,
         "switch_margin_miles": 10,
-        "hysteresis_miles": 5,
-        "users": [
-            {"name": "Me", "email": "me@example.com", "password": "x"},
-            {"name": "Dani", "email": "dani@example.com", "password": "y", "sides": {"City": "right"}},
-        ],
+        "account": {"email": "me@example.com", "password": "x"},
         "beds": [
             {"name": "City", "lat": NYC[0], "lon": NYC[1], "device_id": "dev-city"},
             {"name": "Beach", "lat": HAMPTONS[0], "lon": HAMPTONS[1], "device_id": "dev-beach"},
@@ -44,29 +46,34 @@ def make_cfg(**overrides):
 
 
 class FakeClient:
-    def __init__(self, log, name, fail=False):
-        self.log, self.name, self.fail = log, name, fail
+    def __init__(self, log, failing=(), devices=DEVICES):
+        self.log, self.failing, self.devices = log, failing, devices
 
-    def side_on(self, device_id):
-        return "left"
+    def device(self, device_id):
+        return self.devices[device_id]
 
-    def set_away(self, away):
-        if self.fail:
+    def user_name(self, uid):
+        return {"u-me": "Me", "u-dani": "Dani"}.get(uid, uid)
+
+    def set_away(self, away, user_id):
+        if user_id in self.failing:
             raise RuntimeError("boom")
-        self.log.append((self.name, "away" if away else "home"))
+        self.log.append((self.user_name(user_id), "away" if away else "home"))
 
-    def set_current_device(self, device_id, side):
-        self.log.append((self.name, device_id, side))
+    def set_current_device(self, device_id, side, user_id):
+        if user_id in self.failing:
+            raise RuntimeError("boom")
+        self.log.append((self.user_name(user_id), device_id, side))
 
 
-def controller(cfg, failing=()):
+def controller(cfg, failing=(), devices=DEVICES):
     calls = []
-    ctl = Controller(cfg, lambda u: FakeClient(calls, u.name, u.name in failing))
+    ctl = Controller(cfg, lambda c: FakeClient(calls, failing, devices))
     return ctl, calls
 
 
 HOME_CITY = [("Me", "dev-city", "left"), ("Me", "home"), ("Dani", "dev-city", "right"), ("Dani", "home")]
-HOME_BEACH = [("Me", "dev-beach", "left"), ("Me", "home"), ("Dani", "dev-beach", "left"), ("Dani", "home")]
+HOME_BEACH = [("Me", "dev-beach", "right"), ("Me", "home"), ("Dani", "dev-beach", "left"), ("Dani", "home")]
 ALL_AWAY = [("Me", "away"), ("Dani", "away")]
 
 
@@ -146,7 +153,7 @@ class ControllerTest(unittest.TestCase):
 
     def test_failure_is_retried(self):
         cfg = make_cfg()
-        ctl, calls = controller(cfg, failing={"Dani"})
+        ctl, calls = controller(cfg, failing={"u-dani"})
         r = ctl.update(*NYC)
         self.assertEqual(len(r.errors), 1)
         self.assertEqual(ctl.status().get("home", "unset"), "unset")
@@ -161,7 +168,8 @@ class ControllerTest(unittest.TestCase):
         cfg = make_cfg(beds=[{"name": "City", "lat": NYC[0], "lon": NYC[1]}])
         ctl, calls = controller(cfg)
         r = ctl.update(*NYC)
-        self.assertEqual(len(r.errors), 2)
+        self.assertEqual(len(r.errors), 1)
+        self.assertIn("device_id", r.errors[0])
         self.assertEqual(calls, [])
 
     def test_force_resends(self):
@@ -175,7 +183,7 @@ class ControllerTest(unittest.TestCase):
         ctl, calls = controller(make_cfg())
         r = ctl.update(*NYC, dry_run=True)
         self.assertEqual(calls, [])
-        self.assertEqual(r.actions, ["Me: home at City", "Dani: home at City"])
+        self.assertEqual(r.actions, ["Me: home at City (left side)", "Dani: home at City (right side)"])
         self.assertEqual(ctl.status(), {})
 
     def test_poor_accuracy_skipped(self):
@@ -186,12 +194,18 @@ class ControllerTest(unittest.TestCase):
 
     def test_password_env(self):
         os.environ["TEST_PW"] = "secret"
-        cfg = make_cfg(users=[{"name": "Me", "email": "e", "password_env": "TEST_PW"}])
-        self.assertEqual(cfg.users[0].password, "secret")
+        cfg = make_cfg(account={"email": "e", "password_env": "TEST_PW"})
+        self.assertEqual(cfg.account.password, "secret")
 
-    def test_bad_side_rejected(self):
-        with self.assertRaises(config.ConfigError):
-            make_cfg(users=[{"email": "e", "password": "p", "sides": {"City": "middle"}}])
+    def test_solo_sleeper_and_person_missing_from_home_bed(self):
+        devices = {
+            "dev-city": {"leftUserId": "u-me", "rightUserId": "u-me"},  # Me alone, whole bed
+            "dev-beach": {"leftUserId": "u-dani", "rightUserId": "u-me"},
+        }
+        ctl, calls = controller(make_cfg(), devices=devices)
+        ctl.update(*NYC)
+        # Dani has no side on the City bed, so she is set away rather than left on Beach.
+        self.assertEqual(calls, [("Me", "dev-city", "solo"), ("Me", "home"), ("Dani", "away")])
 
 
 class RedisStoreTest(unittest.TestCase):

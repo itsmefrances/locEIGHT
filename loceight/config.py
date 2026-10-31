@@ -6,17 +6,16 @@ Config is JSON, read from (first match wins):
   3. $LOCEIGHT_CONFIG (a path)
   4. ./config.json
 
-Only the beds listed are managed; any other Pod on the account (e.g. a guest
-bed) is never touched.
+One Eight Sleep login controls everyone who sleeps on the listed beds. Only the
+beds listed are managed; any other Pod on the account (e.g. a guest bed) is
+never touched.
 """
 
 from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
-
-SIDES = ("solo", "left", "right")
+from dataclasses import dataclass
 
 
 class ConfigError(ValueError):
@@ -24,11 +23,9 @@ class ConfigError(ValueError):
 
 
 @dataclass
-class User:
-    name: str
+class Account:
     email: str
     password: str
-    sides: dict[str, str] = field(default_factory=dict)  # optional per-bed side override
 
 
 @dataclass
@@ -45,23 +42,23 @@ class Config:
     switch_margin_miles: float
     hysteresis_miles: float
     when_away_from_all: str  # "away" or "unchanged"
-    users: list[User]
+    account: Account
     beds: list[Bed]
     state_file: str = "state.json"
     redis_url: str | None = None
     max_accuracy_miles: float | None = None
 
 
-def _password(name: str, raw: dict) -> str:
+def _password(raw: dict) -> str:
     if "password_env" in raw:
         var = raw["password_env"]
         value = os.environ.get(var)
         if not value:
-            raise ConfigError(f"user '{name}': environment variable {var} is not set")
+            raise ConfigError(f"environment variable {var} (the Eight Sleep password) is not set")
         return value
     if "password" in raw:
         return raw["password"]
-    raise ConfigError(f"user '{name}': set 'password_env' (recommended) or 'password'")
+    raise ConfigError("account: set 'password_env' (recommended) or 'password'")
 
 
 def parse(data: dict) -> Config:
@@ -75,25 +72,15 @@ def parse(data: dict) -> Config:
             )
             for raw in data["beds"]
         ]
-        bed_names = {b.name for b in beds}
-        if len(bed_names) != len(beds):
-            raise ConfigError("bed names must be unique")
-
-        users = []
-        for raw in data["users"]:
-            name = raw.get("name") or raw["email"]
-            sides = raw.get("sides", {})
-            for bed_name, side in sides.items():
-                if bed_name not in bed_names:
-                    raise ConfigError(f"user '{name}': 'sides' names unknown bed '{bed_name}'")
-                if side not in SIDES:
-                    raise ConfigError(f"user '{name}': side must be one of {SIDES}")
-            users.append(User(name=name, email=raw["email"], password=_password(name, raw), sides=sides))
+        raw_account = data["account"]
+        account = Account(email=raw_account["email"], password=_password(raw_account))
     except KeyError as e:
         raise ConfigError(f"missing required config key: {e}") from None
 
-    if not users:
-        raise ConfigError("add at least one user")
+    if not beds:
+        raise ConfigError("add at least one bed")
+    if len({b.name for b in beds}) != len(beds):
+        raise ConfigError("bed names must be unique")
 
     when = data.get("when_away_from_all", "away")
     if when not in ("away", "unchanged"):
@@ -105,7 +92,7 @@ def parse(data: dict) -> Config:
         switch_margin_miles=float(data.get("switch_margin_miles", 10)),
         hysteresis_miles=float(data.get("hysteresis_miles", 5)),
         when_away_from_all=when,
-        users=users,
+        account=account,
         beds=beds,
         state_file=os.environ.get("LOCEIGHT_STATE_FILE", data.get("state_file", "state.json")),
         redis_url=os.environ.get("REDIS_URL") or data.get("redis_url"),

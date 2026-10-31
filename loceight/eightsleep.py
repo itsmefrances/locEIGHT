@@ -98,33 +98,27 @@ class EightSleep:
         resp = self._http("GET", f"{CLIENT_API_URL}/devices/{device_id}")
         return resp.get("result", resp)
 
-    def side_on(self, device_id: str) -> str:
-        """Which side of the given Pod this account sleeps on."""
-        info = self.device(device_id)
-        uid = self._uid()
-        left, right = info.get("leftUserId") == uid, info.get("rightUserId") == uid
-        if left and right:
-            return "solo"
-        if left:
-            return "left"
-        if right:
-            return "right"
-        raise EightSleepError(f"{self.email} is not assigned to a side of Pod {device_id}")
+    def user_name(self, user_id: str) -> str:
+        """First name of a person on the account (best effort, for messages)."""
+        try:
+            user = self._http("GET", f"{CLIENT_API_URL}/users/{user_id}")["user"]
+            return user.get("firstName") or user_id[:8]
+        except Exception:
+            return user_id[:8]
 
-    def set_away(self, away: bool) -> None:
-        """Turn the account's away mode on or off.
+    def set_away(self, away: bool, user_id: str | None = None) -> None:
+        """Turn away mode on or off for one person (default: the logged-in user).
 
-        The timestamp is set a day in the past so the change applies immediately
-        (same trick pyEight uses).
+        One login can control both sides of a Pod, the same way the Home
+        Assistant integration does. The timestamp is set a day in the past so the
+        change applies immediately.
         """
         when = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         action = "start" if away else "end"
-        self._http("PUT", f"{APP_API_URL}/users/{self._uid()}/away-mode", {"awayPeriod": {action: when}})
+        uid = user_id or self._uid()
+        self._http("PUT", f"{APP_API_URL}/users/{uid}/away-mode", {"awayPeriod": {action: when}})
 
-    def set_current_device(self, device_id: str, side: str = "solo") -> None:
-        """Point the account at a specific Pod (for one account with several Pods)."""
-        self._http(
-            "PUT",
-            f"{CLIENT_API_URL}/users/{self._uid()}/current-device",
-            {"id": device_id, "side": side},
-        )
+    def set_current_device(self, device_id: str, side: str, user_id: str | None = None) -> None:
+        """Make a Pod (and side) the one a person is currently sleeping on."""
+        uid = user_id or self._uid()
+        self._http("PUT", f"{CLIENT_API_URL}/users/{uid}/current-device", {"id": device_id, "side": side})

@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-from .config import Bed, Config, User
+from .config import Bed, Config
 from .eightsleep import EightSleep
 from .geo import distance_miles
 from .state import make_store
@@ -70,21 +70,54 @@ def decide(cfg: Config, lat: float, lon: float, previous_home: str | None = None
     return Decision(home=nearest, distances=distances)
 
 
-ClientFactory = Callable[[User], EightSleep]
+ClientFactory = Callable[[Config], EightSleep]
 
 
 class Controller:
     def __init__(self, cfg: Config, client_factory: ClientFactory | None = None, store=None):
         self.cfg = cfg
         self.store = store or make_store(cfg.redis_url, cfg.state_file)
-        self._factory = client_factory or (lambda u: EightSleep(u.email, u.password))
-        self._clients: dict[str, EightSleep] = {}
+        self._factory = client_factory or (lambda c: EightSleep(c.account.email, c.account.password))
+        self._client: EightSleep | None = None
+        self._sleepers: dict[str, dict[str, str]] | None = None
+        self._names: dict[str, str] = {}
         self._lock = threading.Lock()
 
-    def client(self, user: User) -> EightSleep:
-        if user.name not in self._clients:
-            self._clients[user.name] = self._factory(user)
-        return self._clients[user.name]
+    @property
+    def client(self) -> EightSleep:
+        if self._client is None:
+            self._client = self._factory(self.cfg)
+        return self._client
+
+    def sleepers(self) -> dict[str, dict[str, str]]:
+        """Who sleeps on which managed bed: {user_id: {bed_name: side}}.
+
+        Read from each Pod's left/right assignments, so both of you (and only the
+        people on the managed beds) are switched together.
+        """
+        if self._sleepers is None:
+            found: dict[str, dict[str, str]] = {}
+            for bed in self.cfg.beds:
+                if not bed.device_id:
+                    raise ValueError(f"bed '{bed.name}' has no device_id in the config yet")
+                info = self.client.device(bed.device_id)
+                left, right = info.get("leftUserId"), info.get("rightUserId")
+                if left and left == right:
+                    found.setdefault(left, {})[bed.name] = "solo"
+                else:
+                    if left:
+                        found.setdefault(left, {})[bed.name] = "left"
+                    if right:
+                        found.setdefault(right, {})[bed.name] = "right"
+            if not found:
+                raise ValueError("no one is assigned to the managed beds")
+            self._sleepers = found
+        return self._sleepers
+
+    def name(self, user_id: str) -> str:
+        if user_id not in self._names:
+            self._names[user_id] = self.client.user_name(user_id)
+        return self._names[user_id]
 
     def status(self) -> dict:
         return self.store.load()
@@ -136,22 +169,26 @@ class Controller:
     def _switch(self, home: str | None, result: Result, dry_run: bool) -> None:
         if home is None and self.cfg.when_away_from_all == "unchanged":
             return
+        try:
+            sleepers = self.sleepers()
+        except Exception as e:
+            log.exception("could not read who sleeps on the beds")
+            result.errors.append(str(e))
+            return
         bed = self._bed(home) if home else None
-        for user in self.cfg.users:
+        for uid, sides in sleepers.items():
+            who = self.name(uid)
             try:
-                if bed is None:
-                    result.actions.append(f"{user.name}: away")
+                if bed is None or bed.name not in sides:
+                    # Far from every bed, or this person has no side on the home bed.
+                    result.actions.append(f"{who}: away")
                     if not dry_run:
-                        self.client(user).set_away(True)
+                        self.client.set_away(True, uid)
                     continue
-                if not bed.device_id:
-                    raise ValueError(f"bed '{bed.name}' has no device_id in the config yet")
-                result.actions.append(f"{user.name}: home at {bed.name}")
+                result.actions.append(f"{who}: home at {bed.name} ({sides[bed.name]} side)")
                 if not dry_run:
-                    c = self.client(user)
-                    side = user.sides.get(bed.name) or c.side_on(bed.device_id)
-                    c.set_current_device(bed.device_id, side)
-                    c.set_away(False)
-            except Exception as e:  # keep going with the other user; retried next update
-                log.exception("switching %s failed", user.name)
-                result.errors.append(f"{user.name}: {e}")
+                    self.client.set_current_device(bed.device_id, sides[bed.name], uid)
+                    self.client.set_away(False, uid)
+            except Exception as e:  # keep going with the other person; retried next update
+                log.exception("switching %s failed", who)
+                result.errors.append(f"{who}: {e}")
