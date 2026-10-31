@@ -13,7 +13,7 @@ from loceight.geo import distance_miles
 from loceight.server import make_handler
 from loceight.state import RedisStore
 
-NYC = (40.7836, -73.9805)  # 2211 Broadway
+NYC = (40.7836, -73.9805)  # Manhattan
 HAMPTONS = (41.7911, -74.2288)  # a second home ~71 mi from NYC
 NEWARK = (40.7357, -74.1724)  # ~11 mi from NYC
 NEWBURGH = (41.5034, -74.0104)  # on the drive: 50 mi from NYC, 23 from the second home
