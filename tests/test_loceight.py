@@ -208,6 +208,18 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual(calls, [("Me", "dev-city", "solo"), ("Me", "home"), ("Dani", "away")])
 
 
+class SideAssignmentTest(unittest.TestCase):
+    def test_away_sides_restore_real_mapping(self):
+        from loceight.controller import side_assignments
+        self.assertEqual(side_assignments({"leftUserId": "a", "rightUserId": "b"}), {"a": "left", "b": "right"})
+        collapsed = {"leftUserId": "a", "rightUserId": "a", "awaySides": {"leftUserId": "a", "rightUserId": "b"}}
+        self.assertEqual(side_assignments(collapsed), {"a": "left", "b": "right"})
+        blank = {"awaySides": {"leftUserId": "a", "rightUserId": "b"}}
+        self.assertEqual(side_assignments(blank), {"a": "left", "b": "right"})
+        self.assertEqual(side_assignments({"leftUserId": "a"}), {"a": "solo"})
+        self.assertEqual(side_assignments({}), {})
+
+
 class RedisStoreTest(unittest.TestCase):
     def test_round_trip_against_fake_server(self):
         import socketserver

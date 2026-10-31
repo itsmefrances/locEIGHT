@@ -94,9 +94,27 @@ class EightSleep:
         return self._http("GET", f"{CLIENT_API_URL}/users/me")["user"]
 
     def device(self, device_id: str) -> dict:
-        """Details for one Pod, including `leftUserId` / `rightUserId`."""
+        """Details for one Pod, including `leftUserId` / `rightUserId` / `awaySides`."""
         resp = self._http("GET", f"{CLIENT_API_URL}/devices/{device_id}")
         return resp.get("result", resp)
+
+    def household_summary(self) -> dict:
+        """Every Pod in the household, grouped into sets (this is where a second
+        home or guest room Pod shows up; `users/me` only lists the active one)."""
+        return self._http("GET", f"{APP_API_URL}/household/users/{self._uid()}/summary")
+
+    def household_current_set(self) -> dict:
+        return self._http("GET", f"{APP_API_URL}/household/users/{self._uid()}/current-set")
+
+    def household_device_ids(self) -> list[str]:
+        ids = []
+        for household in self.household_summary().get("households", []):
+            for pod_set in household.get("sets", []):
+                for dev in pod_set.get("devices", []):
+                    dev_id = dev.get("deviceId") or dev.get("id") if isinstance(dev, dict) else dev
+                    if dev_id and dev_id not in ids:
+                        ids.append(dev_id)
+        return ids
 
     def user_name(self, user_id: str) -> str:
         """First name of a person on the account (best effort, for messages)."""

@@ -14,29 +14,38 @@ from .eightsleep import EightSleep
 
 
 def log_devices(cfg) -> None:
-    """Log every Pod on the account and who sleeps on each side, so the
+    """Log every Pod in the household and who sleeps on each side, so the
     device_id values can be filled in (and the guest bed left out)."""
+    from .controller import side_assignments
+
     log = logging.getLogger("loceight")
     try:
         client = EightSleep(cfg.account.email, cfg.account.password)
-        me = client.me()
-        current = (me.get("currentDevice") or {}).get("id")
-        for dev in me.get("devices") or []:
-            dev_id = dev if isinstance(dev, str) else dev.get("id", dev)
+        current = (client.me().get("currentDevice") or {}).get("id")
+        try:
+            summary = client.household_summary()
+            log.info("Household summary: %s", json.dumps(summary)[:4000])
+            log.info("Household current set: %s", json.dumps(client.household_current_set())[:1500])
+            ids = client.household_device_ids()
+        except Exception as e:
+            log.error("could not read household (%s); falling back to users/me", e)
+            ids = []
+        if not ids:
+            ids = [d if isinstance(d, str) else d.get("id") for d in client.me().get("devices") or []]
+        for dev_id in ids:
             try:
                 info = client.device(dev_id)
             except Exception as e:
                 log.info("Pod device_id=%s (details unavailable: %s)", dev_id, e)
                 continue
-            left, right = info.get("leftUserId"), info.get("rightUserId")
+            people = {side: client.user_name(uid) for uid, side in side_assignments(info).items()}
             log.info(
-                "Pod device_id=%s%s left=%s right=%s timezone=%s fields=%s",
+                "Pod device_id=%s%s sleepers=%s online=%s lastHeard=%s",
                 dev_id,
                 " (your active Pod)" if dev_id == current else "",
-                client.user_name(left) if left else "-",
-                client.user_name(right) if right else "-",
-                info.get("timezone"),
-                sorted(info)[:40],
+                people or "-",
+                info.get("online"),
+                info.get("lastHeard"),
             )
     except Exception as e:
         log.error("could not list Pods: %s", e)

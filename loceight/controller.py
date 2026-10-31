@@ -70,6 +70,27 @@ def decide(cfg: Config, lat: float, lon: float, previous_home: str | None = None
     return Decision(home=nearest, distances=distances)
 
 
+def side_assignments(info: dict) -> dict[str, str]:
+    """{user_id: side} for a Pod.
+
+    While someone is in away mode, Eight Sleep may blank or collapse the
+    top-level left/right IDs; `awaySides` keeps the real assignment (same logic
+    as the open-source eightctl tool).
+    """
+    left, right = info.get("leftUserId") or "", info.get("rightUserId") or ""
+    away = info.get("awaySides") or {}
+    away_left, away_right = away.get("leftUserId") or "", away.get("rightUserId") or ""
+    if away_left and away_right and away_left != away_right:
+        left, right = away_left, away_right
+    else:
+        left, right = left or away_left, right or away_right
+    if left and right:
+        return {left: "solo"} if left == right else {left: "left", right: "right"}
+    if left or right:
+        return {left or right: "solo"}
+    return {}
+
+
 ClientFactory = Callable[[Config], EightSleep]
 
 
@@ -101,14 +122,8 @@ class Controller:
                 if not bed.device_id:
                     raise ValueError(f"bed '{bed.name}' has no device_id in the config yet")
                 info = self.client.device(bed.device_id)
-                left, right = info.get("leftUserId"), info.get("rightUserId")
-                if left and left == right:
-                    found.setdefault(left, {})[bed.name] = "solo"
-                else:
-                    if left:
-                        found.setdefault(left, {})[bed.name] = "left"
-                    if right:
-                        found.setdefault(right, {})[bed.name] = "right"
+                for uid, side in side_assignments(info).items():
+                    found.setdefault(uid, {})[bed.name] = side
             if not found:
                 raise ValueError("no one is assigned to the managed beds")
             self._sleepers = found
