@@ -1,128 +1,91 @@
 # locEIGHT
 
-Automatically switch your Eight Sleep Pods between **home** and **away** based on where you are.
+Automatically switches your Eight Sleep beds to match where you are.
 
-> Within 30 miles of one bed → that bed is home and the other is set to away.
-> Far from both → both are set to away (you can turn this off).
+## What it does
 
-```
- iPhone (Shortcuts or OwnTracks)
-        │  POST /location {lat, lon}
-        ▼
- locEIGHT server ── which bed is within radius_miles? ──► Eight Sleep API
-                                                           (away mode on/off,
-                                                            active Pod)
-```
+- **When you arrive within 30 miles of a home**, that home's bed is switched on for **both you and Dani**.
+- **When you're more than 30 miles from both homes**, you and Dani are both set to **away**.
+- **The guest bed is never touched.**
+- **Each change happens once, when you travel.** It doesn't keep checking or re-applying. If you change something by hand in the Eight Sleep app (for example, if you and Dani are apart for a night), it stays that way until your next trip.
 
-No dependencies beyond the Python 3.10+ standard library.
+It goes by your phone's location only. Dani's settings follow yours.
 
-## How it decides
+## Getting it running
 
-1. It measures the distance from you to each bed.
-2. A bed within `radius_miles` (default 30) counts as **home**. If two radii overlap, the nearest bed wins.
-3. Once a bed is home, it stays home until you are more than `radius_miles + hysteresis_miles` away (default 35 mi). That way, sitting near the edge of the radius doesn't flip the beds back and forth.
-4. Every other bed is set to **away**. If no bed is within range, `when_away_from_all` decides what happens:
-   - `"away"` (default): every bed is set to away.
-   - `"unchanged"`: the beds stay as they are.
-5. It only calls Eight Sleep when something changes. If a call fails, it tries again on the next location update.
+| Step | Who | What |
+|---|---|---|
+| 1 | You | Send the addresses of the two homes (not the guest bed). |
+| 2 | Claude | Put the service online and connect it to Eight Sleep. |
+| 3 | You | Enter your and Dani's Eight Sleep passwords on the hosting site, in fields Claude points you to. They're never stored in this code. |
+| 4 | Claude | Find the device ID of each bed and check that everything lines up. |
+| 5 | You | Add one shortcut and two automations to your iPhone (below). It takes about 5 minutes. |
 
-## Setup
+### iPhone setup (step 5)
 
-### 1. Configure
-
-```bash
-cp config.example.json config.json
-```
-
-Edit `config.json`. Set each bed's latitude and longitude: in Google Maps, long-press the spot and copy the coordinates.
-
-**One Eight Sleep account for both Pods** (the usual setup): Eight Sleep's away mode is per account, not per Pod. So locEIGHT also switches which Pod the account is active on. Each bed then needs its `device_id`. To find them, run:
-
-```bash
-export EIGHT_PASSWORD='your-eight-sleep-password'
-python -m loceight devices
-```
-
-**A separate account for each Pod:** add one entry per account under `accounts` and point each bed at its own account. `device_id` is optional in this setup.
-
-Passwords are read from environment variables (`password_env`), so they never go in the file.
-
-### 2. Try it
-
-```bash
-python -m loceight check 40.75 -73.98 --dry-run   # show what would happen
-python -m loceight check 40.75 -73.98             # actually do it
-python -m loceight status
-```
-
-### 3. Run the server
-
-```bash
-export LOCEIGHT_TOKEN=$(python -c 'import secrets; print(secrets.token_urlsafe(24))')
-python -m loceight serve --port 8080
-```
-
-The server must be reachable from your phone. It can run on a home server or Raspberry Pi behind Tailscale or Cloudflare Tunnel, or on any small host. A `render.yaml` is included for Render. In Render's dashboard:
-
-- Paste the contents of `config.json` into `LOCEIGHT_CONFIG_JSON`.
-- Set `EIGHT_PASSWORD`.
-- Copy the generated `LOCEIGHT_TOKEN`.
-
-The state file on Render's free tier is wiped on each restart. That's harmless: the next update simply resends the current settings.
-
-### 4. Send your location from your phone
-
-**iPhone, Shortcuts app.** First create a shortcut named *Update Beds*:
+**Create the shortcut.** Open the **Shortcuts** app, tap **+**, and name it **Update Beds**. Add these two actions:
 
 1. **Get Current Location**
-2. **Get Contents of URL**
-   - URL: `https://YOUR-SERVER/location`
-   - Method: `POST`
-   - Headers: `Authorization` = `Bearer YOUR_TOKEN`
-   - Request Body: JSON, with `lat` = *Current Location → Latitude* and `lon` = *Current Location → Longitude*
+2. **Get Contents of URL**. Claude will give you the exact web address and password to paste in.
 
-Then, under **Automation**, run *Update Beds* when:
+**Make it run automatically.** Go to the **Automation** tab and tap **+**. Create these two automations, choosing **Run Immediately** for each:
 
-- you arrive at or leave each home;
-- you connect to a charger, which catches bedtime;
-- optionally, at a few set times of day.
+- **Charger → Is Connected → Update Beds.** This runs every night when you plug in your phone.
+- **Arrive → (each home) → Update Beds.** This is optional and switches the beds as you pull in.
 
-For each automation, choose **Run Immediately**.
+That's it. Repeated runs in the same place do nothing, so it's fine that these fire often.
 
-**OwnTracks (iOS or Android):** for continuous background updates, use HTTP mode:
+---
 
-- URL: `https://YOUR-SERVER/location`
-- Authentication on, with any username and your token as the password.
+## Technical details
 
-locEIGHT understands OwnTracks payloads directly.
+### How it decides
 
-## Endpoints
+- A bed is "home" when you're within `radius_miles` (30). Once a bed is home, it stays home until you're more than `radius_miles + hysteresis_miles` (35) away. That way, hovering near the boundary doesn't flip the beds.
+- It remembers the last area you were in: near bed A, near bed B, or near neither. It only calls Eight Sleep when that area changes.
+  - **Arriving near a bed:** for each user, it makes that bed the account's active Pod, using the side that user is assigned to on that Pod, then turns away mode off.
+  - **Far from both:** it turns away mode on for each user.
+- If a call fails, the area isn't recorded, so the next update retries it.
+- The memory lives in Redis when `REDIS_URL` is set (a free Render Key Value instance in `render.yaml`). Otherwise it uses a local `state.json` file. Hosting platforms wipe local files on restart, which would cause the change to be re-applied.
 
-| Method | Path | |
-|---|---|---|
-| `POST` | `/location` | `{"lat": .., "lon": .., "accuracy_m": ..}` (or an OwnTracks payload). Add `?dry_run=1` to only preview. |
-| `GET` | `/location?lat=..&lon=..&token=..` | Same, handy for testing from a browser |
-| `GET` | `/status` | Last location, distances, which bed is home, and the last errors |
-| `GET` | `/healthz` | No auth needed |
+### Config
 
-Auth: `Authorization: Bearer <token>`, basic auth with the token as the password, or `?token=`.
-
-## Config reference
+See `config.example.json`. Only the beds you list are managed; leave the guest bed out. Get the `device_id` values with `python -m loceight devices`. The server also logs them at startup if any are missing. A user's side on each Pod is detected automatically. To override it, add `"sides": {"City": "left"}` to that user.
 
 | Key | Default | Meaning |
 |---|---|---|
 | `radius_miles` | 30 | How close counts as "at" a bed |
-| `hysteresis_miles` | 5 | Extra distance before a home bed flips back to away |
+| `hysteresis_miles` | 5 | Extra distance before leaving a bed's area |
 | `when_away_from_all` | `"away"` | `"away"` or `"unchanged"` when you're near no bed |
-| `max_accuracy_miles` | none | Ignore location fixes less accurate than this |
-| `state_file` | `state.json` | Where it remembers what it last sent (or set `LOCEIGHT_STATE_FILE`) |
+| `max_accuracy_miles` | none | Ignore location readings less accurate than this |
 
-## Caveat
+Environment variables:
 
-Eight Sleep has no public API. locEIGHT uses the same endpoints as the mobile app, as documented by [pyEight](https://github.com/lukas-clarke/pyEight), the library behind the Home Assistant integration. Eight Sleep can change these endpoints at any time.
+- `LOCEIGHT_CONFIG_JSON`: the config itself.
+- `EIGHT_PASSWORD_*`: the passwords that `password_env` points to.
+- `LOCEIGHT_TOKEN`: the shared secret the phone sends.
+- `REDIS_URL`: where the memory is kept.
 
-## Tests
+### Commands
 
 ```bash
+python -m loceight devices                        # list Pods and their device IDs
+python -m loceight check 40.75 -73.98 --dry-run   # show what a location would do
+python -m loceight check 40.75 -73.98 --force     # re-apply even if nothing changed
+python -m loceight status
+python -m loceight serve                          # webhook server (needs LOCEIGHT_TOKEN)
 python -m unittest discover -s tests
 ```
+
+### Endpoints
+
+All endpoints except `/healthz` need the token. Send it as `Authorization: Bearer <token>`, as the password in basic auth, or as `?token=`.
+
+- `POST /location` takes `{"lat": .., "lon": ..}`. OwnTracks payloads are also accepted. Add `?dry_run=1` to preview without changing anything.
+- `GET /location?lat=..&lon=..` does the same thing.
+- `GET /status`
+- `GET /healthz`
+
+### Caveat
+
+Eight Sleep has no public API. This uses the same endpoints as the mobile app, as documented by [pyEight](https://github.com/lukas-clarke/pyEight), the library behind the Home Assistant integration. Eight Sleep may change these endpoints at any time.

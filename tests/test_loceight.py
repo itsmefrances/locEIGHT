@@ -11,6 +11,7 @@ from loceight import config
 from loceight.controller import Controller, decide
 from loceight.geo import distance_miles
 from loceight.server import make_handler, parse_location
+from loceight.state import RedisStore
 
 NYC = (40.7128, -74.0060)
 HAMPTONS = (40.9634, -72.1848)  # ~97 mi from NYC
@@ -18,48 +19,51 @@ NEWARK = (40.7357, -74.1724)  # ~9 mi from NYC
 LA = (34.0522, -118.2437)
 
 
-def make_cfg(shared_account=False, **overrides):
+def make_cfg(**overrides):
     data = {
         "radius_miles": 30,
         "hysteresis_miles": 5,
-        "accounts": {
-            "a": {"email": "a@example.com", "password": "x"},
-            "b": {"email": "b@example.com", "password": "y"},
-        },
+        "users": [
+            {"name": "Me", "email": "me@example.com", "password": "x"},
+            {"name": "Dani", "email": "dani@example.com", "password": "y", "sides": {"City": "right"}},
+        ],
         "beds": [
-            {"name": "City", "lat": NYC[0], "lon": NYC[1], "account": "a", "device_id": "dev-city"},
-            {
-                "name": "Beach",
-                "lat": HAMPTONS[0],
-                "lon": HAMPTONS[1],
-                "account": "a" if shared_account else "b",
-                "device_id": "dev-beach",
-            },
+            {"name": "City", "lat": NYC[0], "lon": NYC[1], "device_id": "dev-city"},
+            {"name": "Beach", "lat": HAMPTONS[0], "lon": HAMPTONS[1], "device_id": "dev-beach"},
         ],
     }
     data.update(overrides)
     cfg = config.parse(data)
+    cfg.redis_url = None
     cfg.state_file = os.path.join(tempfile.mkdtemp(), "state.json")
     return cfg
 
 
 class FakeClient:
-    def __init__(self, log, key, fail=False):
-        self.log, self.key, self.fail = log, key, fail
+    def __init__(self, log, name, fail=False):
+        self.log, self.name, self.fail = log, name, fail
+
+    def side_on(self, device_id):
+        return "left"
 
     def set_away(self, away):
         if self.fail:
             raise RuntimeError("boom")
-        self.log.append((self.key, "away" if away else "home"))
+        self.log.append((self.name, "away" if away else "home"))
 
     def set_current_device(self, device_id, side):
-        self.log.append((self.key, "device", device_id))
+        self.log.append((self.name, device_id, side))
 
 
 def controller(cfg, failing=()):
     calls = []
-    ctl = Controller(cfg, lambda acct: FakeClient(calls, acct.key, acct.key in failing))
+    ctl = Controller(cfg, lambda u: FakeClient(calls, u.name, u.name in failing))
     return ctl, calls
+
+
+HOME_CITY = [("Me", "dev-city", "left"), ("Me", "home"), ("Dani", "dev-city", "right"), ("Dani", "home")]
+HOME_BEACH = [("Me", "dev-beach", "left"), ("Me", "home"), ("Dani", "dev-beach", "left"), ("Dani", "home")]
+ALL_AWAY = [("Me", "away"), ("Dani", "away")]
 
 
 class GeoTest(unittest.TestCase):
@@ -90,22 +94,36 @@ class DecideTest(unittest.TestCase):
 
 
 class ControllerTest(unittest.TestCase):
-    def test_separate_accounts(self):
+    def test_both_users_move_together_once_per_trip(self):
         ctl, calls = controller(make_cfg())
         r = ctl.update(*NEWARK)
         self.assertEqual(r.home, "City")
-        self.assertCountEqual(calls, [("a", "home"), ("b", "away")])
+        self.assertEqual(calls, HOME_CITY)
 
         calls.clear()
-        ctl.update(*NYC)  # nothing changed -> no API calls
+        ctl.update(*NYC)  # still near City -> nothing sent
+        ctl.update(*NEWARK)
         self.assertEqual(calls, [])
 
         ctl.update(*HAMPTONS)
-        self.assertCountEqual(calls, [("a", "away"), ("b", "home")])
+        self.assertEqual(calls, HOME_BEACH)
 
         calls.clear()
         ctl.update(*LA)
-        self.assertCountEqual(calls, [("b", "away")])  # a already away
+        self.assertEqual(calls, ALL_AWAY)
+        calls.clear()
+        ctl.update(*LA)  # still far away -> nothing sent
+        self.assertEqual(calls, [])
+
+    def test_manual_override_is_not_undone(self):
+        # Pretend the user fixed something by hand in the app; with no trip,
+        # repeated updates send nothing, so their change sticks.
+        ctl, calls = controller(make_cfg())
+        ctl.update(*NYC)
+        calls.clear()
+        for _ in range(5):
+            ctl.update(*NYC)
+        self.assertEqual(calls, [])
 
     def test_unchanged_when_far_from_all(self):
         ctl, calls = controller(make_cfg(when_away_from_all="unchanged"))
@@ -113,45 +131,41 @@ class ControllerTest(unittest.TestCase):
         calls.clear()
         ctl.update(*LA)
         self.assertEqual(calls, [])
-
-    def test_shared_account_switches_device(self):
-        ctl, calls = controller(make_cfg(shared_account=True))
-        ctl.update(*NYC)
-        self.assertEqual(calls, [("a", "device", "dev-city"), ("a", "home")])
-        calls.clear()
-        ctl.update(*HAMPTONS)
-        self.assertEqual(calls, [("a", "device", "dev-beach")])
-        calls.clear()
-        ctl.update(*LA)
-        self.assertEqual(calls, [("a", "away")])
-
-    def test_shared_account_requires_device_ids(self):
-        data = {
-            "accounts": {"a": {"email": "a@example.com", "password": "x"}},
-            "beds": [
-                {"name": "One", "lat": 0, "lon": 0, "account": "a"},
-                {"name": "Two", "lat": 1, "lon": 1, "account": "a"},
-            ],
-        }
-        with self.assertRaises(config.ConfigError):
-            config.parse(data)
+        ctl.update(*NYC)  # coming back still counts as a trip
+        self.assertEqual(calls, HOME_CITY)
 
     def test_failure_is_retried(self):
         cfg = make_cfg()
-        ctl, calls = controller(cfg, failing={"b"})
+        ctl, calls = controller(cfg, failing={"Dani"})
         r = ctl.update(*NYC)
         self.assertEqual(len(r.errors), 1)
-        self.assertEqual(calls, [("a", "home")])
-        # Next update with a working client retries b only.
+        self.assertEqual(ctl.status().get("home", "unset"), "unset")
         ctl2, calls2 = controller(cfg)
         ctl2.update(*NYC)
-        self.assertEqual(calls2, [("b", "away")])
+        self.assertEqual(calls2, HOME_CITY)
+        calls2.clear()
+        ctl2.update(*NYC)
+        self.assertEqual(calls2, [])
+
+    def test_missing_device_id_reports_error(self):
+        cfg = make_cfg(beds=[{"name": "City", "lat": NYC[0], "lon": NYC[1]}])
+        ctl, calls = controller(cfg)
+        r = ctl.update(*NYC)
+        self.assertEqual(len(r.errors), 2)
+        self.assertEqual(calls, [])
+
+    def test_force_resends(self):
+        ctl, calls = controller(make_cfg())
+        ctl.update(*NYC)
+        calls.clear()
+        ctl.update(*NYC, force=True)
+        self.assertEqual(calls, HOME_CITY)
 
     def test_dry_run_changes_nothing(self):
         ctl, calls = controller(make_cfg())
         r = ctl.update(*NYC, dry_run=True)
         self.assertEqual(calls, [])
-        self.assertEqual(len(r.actions), 2)
+        self.assertEqual(r.actions, ["Me: home at City", "Dani: home at City"])
         self.assertEqual(ctl.status(), {})
 
     def test_poor_accuracy_skipped(self):
@@ -162,9 +176,58 @@ class ControllerTest(unittest.TestCase):
 
     def test_password_env(self):
         os.environ["TEST_PW"] = "secret"
-        cfg = make_cfg(accounts={"a": {"email": "e", "password_env": "TEST_PW"},
-                                 "b": {"email": "f", "password_env": "TEST_PW"}})
-        self.assertEqual(cfg.accounts["a"].password, "secret")
+        cfg = make_cfg(users=[{"name": "Me", "email": "e", "password_env": "TEST_PW"}])
+        self.assertEqual(cfg.users[0].password, "secret")
+
+    def test_bad_side_rejected(self):
+        with self.assertRaises(config.ConfigError):
+            make_cfg(users=[{"email": "e", "password": "p", "sides": {"City": "middle"}}])
+
+
+class RedisStoreTest(unittest.TestCase):
+    def test_round_trip_against_fake_server(self):
+        import socketserver
+
+        store_data = {}
+
+        class H(socketserver.StreamRequestHandler):
+            def handle(self):
+                while True:
+                    line = self.rfile.readline()
+                    if not line:
+                        return
+                    n = int(line[1:])
+                    args = []
+                    for _ in range(n):
+                        size = int(self.rfile.readline()[1:])
+                        args.append(self.rfile.read(size + 2)[:-2].decode())
+                    cmd = args[0].upper()
+                    if cmd == "AUTH":
+                        ok = args[-1] == "pw"
+                        self.wfile.write(b"+OK\r\n" if ok else b"-WRONGPASS\r\n")
+                    elif cmd == "SET":
+                        store_data[args[1]] = args[2]
+                        self.wfile.write(b"+OK\r\n")
+                    elif cmd == "GET":
+                        v = store_data.get(args[1])
+                        if v is None:
+                            self.wfile.write(b"$-1\r\n")
+                        else:
+                            b = v.encode()
+                            self.wfile.write(b"$%d\r\n%s\r\n" % (len(b), b))
+
+        srv = socketserver.ThreadingTCPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            store = RedisStore(f"redis://:pw@127.0.0.1:{srv.server_address[1]}")
+            self.assertEqual(store.load(), {})
+            store.save({"home": "City"})
+            self.assertEqual(store.load(), {"home": "City"})
+            with self.assertRaises(RuntimeError):
+                RedisStore(f"redis://:bad@127.0.0.1:{srv.server_address[1]}").load()
+        finally:
+            srv.shutdown()
+            srv.server_close()
 
 
 class ServerTest(unittest.TestCase):
@@ -193,12 +256,12 @@ class ServerTest(unittest.TestCase):
     def test_location(self):
         out = self.post({"lat": NYC[0], "lon": NYC[1]})
         self.assertEqual(out["home"], "City")
-        self.assertCountEqual(self.calls, [("a", "home"), ("b", "away")])
+        self.assertEqual(self.calls, HOME_CITY)
 
     def test_owntracks(self):
         self.assertEqual(self.post({"_type": "location", "lat": HAMPTONS[0], "lon": HAMPTONS[1], "acc": 20}), [])
         self.assertEqual(self.post({"_type": "transition"}), [])
-        self.assertIn(("b", "home"), self.calls)
+        self.assertEqual(self.calls, HOME_BEACH)
 
     def test_rejects_bad_token(self):
         with self.assertRaises(urllib.error.HTTPError) as cm:

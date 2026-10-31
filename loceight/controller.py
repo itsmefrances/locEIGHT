@@ -1,18 +1,22 @@
-"""Decide which bed is "home" for a location and push that to Eight Sleep."""
+"""Decide which bed is "home" for a location and push that to Eight Sleep.
+
+Changes are made only when you move from one area to another (near bed A, near
+bed B, or near neither). Repeated location updates in the same area do nothing,
+so a manual change in the Eight Sleep app is never undone until you next travel.
+"""
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-from .config import Account, Bed, Config
+from .config import Bed, Config, User
 from .eightsleep import EightSleep
 from .geo import distance_miles
+from .state import make_store
 
 log = logging.getLogger("loceight")
 
@@ -27,6 +31,7 @@ class Decision:
 class Result:
     home: str | None
     distances: dict[str, float]
+    changed: bool = False
     actions: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     skipped: str | None = None
@@ -34,6 +39,7 @@ class Result:
     def to_dict(self) -> dict:
         return {
             "home": self.home,
+            "changed": self.changed,
             "distances_miles": {k: round(v, 1) for k, v in self.distances.items()},
             "actions": self.actions,
             "errors": self.errors,
@@ -60,39 +66,21 @@ def decide(cfg: Config, lat: float, lon: float, previous_home: str | None = None
     return Decision(home=home, distances=distances)
 
 
-class StateStore:
-    def __init__(self, path: str):
-        self.path = path
-
-    def load(self) -> dict:
-        try:
-            with open(self.path) as f:
-                return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return {}
-
-    def save(self, state: dict) -> None:
-        tmp = f"{self.path}.tmp"
-        with open(tmp, "w") as f:
-            json.dump(state, f, indent=2)
-        os.replace(tmp, self.path)
-
-
-ClientFactory = Callable[[Account], EightSleep]
+ClientFactory = Callable[[User], EightSleep]
 
 
 class Controller:
-    def __init__(self, cfg: Config, client_factory: ClientFactory | None = None):
+    def __init__(self, cfg: Config, client_factory: ClientFactory | None = None, store=None):
         self.cfg = cfg
-        self.store = StateStore(cfg.state_file)
-        self._factory = client_factory or (lambda a: EightSleep(a.email, a.password))
+        self.store = store or make_store(cfg.redis_url, cfg.state_file)
+        self._factory = client_factory or (lambda u: EightSleep(u.email, u.password))
         self._clients: dict[str, EightSleep] = {}
         self._lock = threading.Lock()
 
-    def client(self, account_key: str) -> EightSleep:
-        if account_key not in self._clients:
-            self._clients[account_key] = self._factory(self.cfg.accounts[account_key])
-        return self._clients[account_key]
+    def client(self, user: User) -> EightSleep:
+        if user.name not in self._clients:
+            self._clients[user.name] = self._factory(user)
+        return self._clients[user.name]
 
     def status(self) -> dict:
         return self.store.load()
@@ -110,7 +98,8 @@ class Controller:
 
     def _update(self, lat, lon, accuracy_miles, dry_run, force) -> Result:
         state = self.store.load()
-        decision = decide(self.cfg, lat, lon, state.get("home"))
+        previous = state.get("home")
+        decision = decide(self.cfg, lat, lon, previous)
         result = Result(home=decision.home, distances=decision.distances)
 
         limit = self.cfg.max_accuracy_miles
@@ -118,47 +107,47 @@ class Controller:
             result.skipped = f"location accuracy {accuracy_miles:.1f} mi is worse than {limit} mi"
             return result
 
-        accounts_state = state.setdefault("accounts", {})
-        for key, beds in self.cfg.beds_by_account.items():
-            self._apply_account(key, beds, decision.home, accounts_state, result, dry_run, force)
+        first_run = "home" not in state
+        result.changed = first_run or decision.home != previous
+        if result.changed or force:
+            self._switch(decision.home, result, dry_run)
 
         if not dry_run:
-            state["home"] = decision.home
+            # Only remember the new area once every user was switched, so a failed
+            # call is retried on the next update.
+            if not result.errors:
+                state["home"] = decision.home
+                state["switched_at"] = int(time.time()) if (result.changed or force) else state.get("switched_at")
+                state.pop("last_errors", None)
+            else:
+                state["last_errors"] = result.errors
             state["last_location"] = {"lat": lat, "lon": lon, "at": int(time.time())}
             state["distances_miles"] = result.to_dict()["distances_miles"]
-            if result.errors:
-                state["last_errors"] = result.errors
-            else:
-                state.pop("last_errors", None)
             self.store.save(state)
         return result
 
-    def _apply_account(self, key, beds: list[Bed], home, accounts_state, result, dry_run, force):
-        acct = accounts_state.setdefault(key, {})
-        home_bed = next((b for b in beds if b.name == home), None)
-        names = "/".join(b.name for b in beds)
+    def _bed(self, name: str) -> Bed:
+        return next(b for b in self.cfg.beds if b.name == name)
 
-        if home_bed is not None:
-            want_away = False
-        elif home is None and self.cfg.when_away_from_all == "unchanged":
+    def _switch(self, home: str | None, result: Result, dry_run: bool) -> None:
+        if home is None and self.cfg.when_away_from_all == "unchanged":
             return
-        else:
-            want_away = True
-
-        try:
-            if home_bed is not None and len(beds) > 1:
-                if force or acct.get("current_device") != home_bed.device_id:
-                    result.actions.append(f"{key}: switch active Pod to {home_bed.name}")
+        bed = self._bed(home) if home else None
+        for user in self.cfg.users:
+            try:
+                if bed is None:
+                    result.actions.append(f"{user.name}: away")
                     if not dry_run:
-                        self.client(key).set_current_device(home_bed.device_id, home_bed.side)
-                        acct["current_device"] = home_bed.device_id
-            if force or acct.get("away") != want_away:
-                label = "away" if want_away else "home"
-                target = home_bed.name if home_bed else names
-                result.actions.append(f"{key}: set {target} to {label}")
+                        self.client(user).set_away(True)
+                    continue
+                if not bed.device_id:
+                    raise ValueError(f"bed '{bed.name}' has no device_id in the config yet")
+                result.actions.append(f"{user.name}: home at {bed.name}")
                 if not dry_run:
-                    self.client(key).set_away(want_away)
-                    acct["away"] = want_away
-        except Exception as e:  # keep going with other accounts; retry next update
-            log.exception("account %s failed", key)
-            result.errors.append(f"{key}: {e}")
+                    c = self.client(user)
+                    side = user.sides.get(bed.name) or c.side_on(bed.device_id)
+                    c.set_current_device(bed.device_id, side)
+                    c.set_away(False)
+            except Exception as e:  # keep going with the other user; retried next update
+                log.exception("switching %s failed", user.name)
+                result.errors.append(f"{user.name}: {e}")

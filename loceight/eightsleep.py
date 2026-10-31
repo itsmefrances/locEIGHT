@@ -93,6 +93,24 @@ class EightSleep:
         """The account profile, including its `devices` and `currentDevice`."""
         return self._http("GET", f"{CLIENT_API_URL}/users/me")["user"]
 
+    def device(self, device_id: str) -> dict:
+        """Details for one Pod, including `leftUserId` / `rightUserId`."""
+        resp = self._http("GET", f"{CLIENT_API_URL}/devices/{device_id}")
+        return resp.get("result", resp)
+
+    def side_on(self, device_id: str) -> str:
+        """Which side of the given Pod this account sleeps on."""
+        info = self.device(device_id)
+        uid = self._uid()
+        left, right = info.get("leftUserId") == uid, info.get("rightUserId") == uid
+        if left and right:
+            return "solo"
+        if left:
+            return "left"
+        if right:
+            return "right"
+        raise EightSleepError(f"{self.email} is not assigned to a side of Pod {device_id}")
+
     def set_away(self, away: bool) -> None:
         """Turn the account's away mode on or off.
 

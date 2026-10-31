@@ -13,6 +13,28 @@ from .controller import Controller
 from .eightsleep import EightSleep
 
 
+def log_devices(cfg) -> None:
+    """Log every Pod each user can see, so device_id values can be filled in."""
+    log = logging.getLogger("loceight")
+    for user in cfg.users:
+        try:
+            client = EightSleep(user.email, user.password)
+            me = client.me()
+            current = (me.get("currentDevice") or {}).get("id")
+            for dev in me.get("devices") or []:
+                dev_id = dev if isinstance(dev, str) else dev.get("id", dev)
+                info = {}
+                try:
+                    info = client.device(dev_id)
+                except Exception as e:
+                    info = {"error": str(e)}
+                summary = {k: info.get(k) for k in ("deviceId", "timezone", "leftUserId", "rightUserId") if k in info}
+                log.info("Pod for %s: device_id=%s%s %s", user.name, dev_id,
+                         " (currently active)" if dev_id == current else "", summary)
+        except Exception as e:
+            log.error("could not list Pods for %s: %s", user.name, e)
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="loceight", description="Switch Eight Sleep beds by location.")
     p.add_argument("-c", "--config", help="path to config.json")
@@ -30,8 +52,7 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("status", help="print saved state")
 
-    d = sub.add_parser("devices", help="list the Pods on an account (to find device_id values)")
-    d.add_argument("account", nargs="?", help="account key from config (default: all)")
+    sub.add_parser("devices", help="list the Pods on each account (to find device_id values)")
 
     args = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -50,6 +71,8 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         from .server import serve
 
+        if any(not b.device_id for b in cfg.beds):
+            log_devices(cfg)
         serve(ctl, token, args.host, args.port)
         return 0
 
@@ -63,13 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "devices":
-        keys = [args.account] if args.account else list(cfg.accounts)
-        for key in keys:
-            acct = cfg.accounts[key]
-            me = EightSleep(acct.email, acct.password).me()
-            print(f"{key} ({acct.email}):")
-            print(f"  devices: {me.get('devices')}")
-            print(f"  currentDevice: {me.get('currentDevice')}")
+        log_devices(cfg)
         return 0
     return 1
 

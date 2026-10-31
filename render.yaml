@@ -2,14 +2,27 @@ services:
   - type: web
     name: loceight
     runtime: python
-    plan: free  # spins down when idle; first request after a nap takes ~1 min. "starter" avoids that.
+    plan: free  # sleeps when idle; the first update after a nap takes ~1 min. "starter" ($7/mo) avoids that.
     buildCommand: "true"
     startCommand: python -m loceight serve
     healthCheckPath: /healthz
     envVars:
       - key: LOCEIGHT_TOKEN
         generateValue: true
-      - key: EIGHT_PASSWORD
+      - key: EIGHT_PASSWORD_ME
+        sync: false
+      - key: EIGHT_PASSWORD_DANI
         sync: false
       - key: LOCEIGHT_CONFIG_JSON
         sync: false
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: loceight-memory
+          property: connectionString
+
+  # Remembers which bed was last switched to, so a restart never re-applies a change.
+  - type: keyvalue
+    name: loceight-memory
+    plan: free
+    ipAllowList: []

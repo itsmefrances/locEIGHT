@@ -5,6 +5,9 @@ Config is JSON, read from (first match wins):
   2. $LOCEIGHT_CONFIG_JSON (the JSON itself, handy on hosting platforms)
   3. $LOCEIGHT_CONFIG (a path)
   4. ./config.json
+
+Only the beds listed are managed; any other Pod on the account (e.g. a guest
+bed) is never touched.
 """
 
 from __future__ import annotations
@@ -13,16 +16,19 @@ import json
 import os
 from dataclasses import dataclass, field
 
+SIDES = ("solo", "left", "right")
+
 
 class ConfigError(ValueError):
     pass
 
 
 @dataclass
-class Account:
-    key: str
+class User:
+    name: str
     email: str
     password: str
+    sides: dict[str, str] = field(default_factory=dict)  # optional per-bed side override
 
 
 @dataclass
@@ -30,9 +36,7 @@ class Bed:
     name: str
     lat: float
     lon: float
-    account: str
     device_id: str | None = None
-    side: str = "solo"
 
 
 @dataclass
@@ -40,63 +44,55 @@ class Config:
     radius_miles: float
     hysteresis_miles: float
     when_away_from_all: str  # "away" or "unchanged"
-    accounts: dict[str, Account]
+    users: list[User]
     beds: list[Bed]
     state_file: str = "state.json"
+    redis_url: str | None = None
     max_accuracy_miles: float | None = None
-    beds_by_account: dict[str, list[Bed]] = field(default_factory=dict)
 
 
-def _password(key: str, raw: dict) -> str:
+def _password(name: str, raw: dict) -> str:
     if "password_env" in raw:
         var = raw["password_env"]
         value = os.environ.get(var)
         if not value:
-            raise ConfigError(f"account '{key}': environment variable {var} is not set")
+            raise ConfigError(f"user '{name}': environment variable {var} is not set")
         return value
     if "password" in raw:
         return raw["password"]
-    raise ConfigError(f"account '{key}': set 'password_env' (recommended) or 'password'")
+    raise ConfigError(f"user '{name}': set 'password_env' (recommended) or 'password'")
 
 
 def parse(data: dict) -> Config:
     try:
-        accounts = {}
-        for key, raw in data["accounts"].items():
-            accounts[key] = Account(key=key, email=raw["email"], password=_password(key, raw))
-
-        beds = []
-        for raw in data["beds"]:
-            bed = Bed(
+        beds = [
+            Bed(
                 name=raw["name"],
                 lat=float(raw["lat"]),
                 lon=float(raw["lon"]),
-                account=raw["account"],
-                device_id=raw.get("device_id"),
-                side=raw.get("side", "solo"),
+                device_id=raw.get("device_id") or None,
             )
-            if bed.account not in accounts:
-                raise ConfigError(f"bed '{bed.name}' uses unknown account '{bed.account}'")
-            if bed.side not in ("solo", "left", "right"):
-                raise ConfigError(f"bed '{bed.name}': side must be solo, left or right")
-            beds.append(bed)
+            for raw in data["beds"]
+        ]
+        bed_names = {b.name for b in beds}
+        if len(bed_names) != len(beds):
+            raise ConfigError("bed names must be unique")
+
+        users = []
+        for raw in data["users"]:
+            name = raw.get("name") or raw["email"]
+            sides = raw.get("sides", {})
+            for bed_name, side in sides.items():
+                if bed_name not in bed_names:
+                    raise ConfigError(f"user '{name}': 'sides' names unknown bed '{bed_name}'")
+                if side not in SIDES:
+                    raise ConfigError(f"user '{name}': side must be one of {SIDES}")
+            users.append(User(name=name, email=raw["email"], password=_password(name, raw), sides=sides))
     except KeyError as e:
         raise ConfigError(f"missing required config key: {e}") from None
 
-    if len({b.name for b in beds}) != len(beds):
-        raise ConfigError("bed names must be unique")
-
-    by_account: dict[str, list[Bed]] = {}
-    for bed in beds:
-        by_account.setdefault(bed.account, []).append(bed)
-    for key, group in by_account.items():
-        if len(group) > 1:
-            missing = [b.name for b in group if not b.device_id]
-            if missing:
-                raise ConfigError(
-                    f"beds {missing} share account '{key}', so each needs a 'device_id' "
-                    "(run `python -m loceight devices` to find them)"
-                )
+    if not users:
+        raise ConfigError("add at least one user")
 
     when = data.get("when_away_from_all", "away")
     if when not in ("away", "unchanged"):
@@ -107,11 +103,11 @@ def parse(data: dict) -> Config:
         radius_miles=float(data.get("radius_miles", 30)),
         hysteresis_miles=float(data.get("hysteresis_miles", 5)),
         when_away_from_all=when,
-        accounts=accounts,
+        users=users,
         beds=beds,
         state_file=os.environ.get("LOCEIGHT_STATE_FILE", data.get("state_file", "state.json")),
+        redis_url=os.environ.get("REDIS_URL") or data.get("redis_url"),
         max_accuracy_miles=float(max_acc) if max_acc is not None else None,
-        beds_by_account=by_account,
     )
 
 
