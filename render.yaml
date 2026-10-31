@@ -7,6 +7,8 @@ services:
     startCommand: python -m loceight serve
     healthCheckPath: /healthz
     envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
       - key: LOCEIGHT_TOKEN
         generateValue: true
       - key: EIGHT_PASSWORD

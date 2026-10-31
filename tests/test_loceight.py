@@ -14,17 +14,17 @@ from loceight.server import make_handler
 from loceight.state import RedisStore
 
 NYC = (40.7836, -73.9805)  # 2211 Broadway
-HAMPTONS = (41.7911, -74.2288)  # Accord, NY (~71 mi from NYC); name kept for brevity
+HAMPTONS = (41.7911, -74.2288)  # a second home ~71 mi from NYC
 NEWARK = (40.7357, -74.1724)  # ~11 mi from NYC
-NEWBURGH = (41.5034, -74.0104)  # on the drive: 50 mi from NYC, 23 from Accord
+NEWBURGH = (41.5034, -74.0104)  # on the drive: 50 mi from NYC, 23 from the second home
 MIDWAY = (41.2873, -74.1047)  # about halfway between the homes
-ALBANY = (42.6526, -73.7562)  # 64 mi from Accord -> away
+ALBANY = (42.6526, -73.7562)  # 64 mi from the second home -> away
 LA = (34.0522, -118.2437)
 
 
 DEVICES = {
-    "dev-city": {"leftUserId": "u-me", "rightUserId": "u-dani"},
-    "dev-beach": {"leftUserId": "u-dani", "rightUserId": "u-me"},
+    "dev-city": {"leftUserId": "u-me", "rightUserId": "u-partner"},
+    "dev-beach": {"leftUserId": "u-partner", "rightUserId": "u-me"},
 }
 
 
@@ -56,7 +56,7 @@ class FakeClient:
         return self.devices[device_id]
 
     def user_name(self, uid):
-        return {"u-me": "Me", "u-dani": "Dani"}.get(uid, uid)
+        return {"u-me": "Me", "u-partner": "Partner"}.get(uid, uid)
 
     def set_away(self, away, user_id):
         if user_id in self.failing:
@@ -75,9 +75,9 @@ def controller(cfg, failing=(), devices=DEVICES):
     return ctl, calls
 
 
-HOME_CITY = [("Me", "dev-city", "left"), ("Me", "home"), ("Dani", "dev-city", "right"), ("Dani", "home")]
-HOME_BEACH = [("Me", "dev-beach", "right"), ("Me", "home"), ("Dani", "dev-beach", "left"), ("Dani", "home")]
-ALL_AWAY = [("Me", "away"), ("Dani", "away")]
+HOME_CITY = [("Me", "dev-city", "left"), ("Me", "home"), ("Partner", "dev-city", "right"), ("Partner", "home")]
+HOME_BEACH = [("Me", "dev-beach", "right"), ("Me", "home"), ("Partner", "dev-beach", "left"), ("Partner", "home")]
+ALL_AWAY = [("Me", "away"), ("Partner", "away")]
 
 
 class GeoTest(unittest.TestCase):
@@ -108,7 +108,7 @@ class DecideTest(unittest.TestCase):
 
     def test_away_hysteresis(self):
         cfg = make_cfg()
-        point = (NYC[0], NYC[1] - 52 / 52.4)  # ~52 mi west of NYC, ~60 from Accord
+        point = (NYC[0], NYC[1] - 52 / 52.4)  # ~52 mi west of NYC, ~60 from the second home
         self.assertIsNone(decide(cfg, *point).home)
         self.assertEqual(decide(cfg, *point, previous_home="City").home, "City")
 
@@ -156,7 +156,7 @@ class ControllerTest(unittest.TestCase):
 
     def test_failure_is_retried(self):
         cfg = make_cfg()
-        ctl, calls = controller(cfg, failing={"u-dani"})
+        ctl, calls = controller(cfg, failing={"u-partner"})
         r = ctl.update(*NYC)
         self.assertEqual(len(r.errors), 1)
         self.assertEqual(ctl.status().get("home", "unset"), "unset")
@@ -186,7 +186,7 @@ class ControllerTest(unittest.TestCase):
         ctl, calls = controller(make_cfg())
         r = ctl.update(*NYC, dry_run=True)
         self.assertEqual(calls, [])
-        self.assertEqual(r.actions, ["Me: home at City (left side)", "Dani: home at City (right side)"])
+        self.assertEqual(r.actions, ["Me: home at City (left side)", "Partner: home at City (right side)"])
         self.assertEqual(ctl.status(), {})
 
     def test_password_env(self):
@@ -197,12 +197,12 @@ class ControllerTest(unittest.TestCase):
     def test_solo_sleeper_and_person_missing_from_home_bed(self):
         devices = {
             "dev-city": {"leftUserId": "u-me", "rightUserId": "u-me"},  # Me alone, whole bed
-            "dev-beach": {"leftUserId": "u-dani", "rightUserId": "u-me"},
+            "dev-beach": {"leftUserId": "u-partner", "rightUserId": "u-me"},
         }
         ctl, calls = controller(make_cfg(), devices=devices)
         ctl.update(*NYC)
-        # Dani has no side on the City bed, so she is set away rather than left on Beach.
-        self.assertEqual(calls, [("Me", "dev-city", "solo"), ("Me", "home"), ("Dani", "away")])
+        # Partner has no side on the City bed, so they are set away rather than left on Beach.
+        self.assertEqual(calls, [("Me", "dev-city", "solo"), ("Me", "home"), ("Partner", "away")])
 
 
 class HouseholdSwitchTest(unittest.TestCase):
@@ -224,7 +224,7 @@ class HouseholdSwitchTest(unittest.TestCase):
 
         ctl = Controller(make_cfg(), lambda c: C(calls))
         ctl.update(*NYC)
-        self.assertEqual(calls, [("Me", "set", "set-city"), ("Me", "home"), ("Dani", "set", "set-city"), ("Dani", "home")])
+        self.assertEqual(calls, [("Me", "set", "set-city"), ("Me", "home"), ("Partner", "set", "set-city"), ("Partner", "home")])
         calls.clear()
         C.refuse = True
         ctl.update(*HAMPTONS)
