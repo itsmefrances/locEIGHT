@@ -4,8 +4,8 @@ Automatically switches your Eight Sleep beds to match where you are.
 
 ## What it does
 
-- **When you arrive within 30 miles of a home**, that home's bed is switched on for **both you and Dani**.
-- **When you're more than 30 miles from both homes**, you and Dani are both set to **away**.
+- **The home you're closer to is "home."** Its bed is switched on for **both you and Dani**. On the drive between the homes, the switch happens about halfway, so the bed you're heading to is ready when you arrive.
+- **When you're more than 50 miles from both homes** (a real trip, not the drive between them), you and Dani are both set to **away**.
 - **The guest bed is never touched.**
 - **Each change happens once, when you travel.** It doesn't keep checking or re-applying. If you change something by hand in the Eight Sleep app (for example, if you and Dani are apart for a night), it stays that way until your next trip.
 
@@ -15,7 +15,7 @@ It goes by your phone's location only. Dani's settings follow yours.
 
 | Step | Who | What |
 |---|---|---|
-| 1 | You | Send the addresses of the two homes (not the guest bed). |
+| 1 | You | ✅ Done: home addresses received. |
 | 2 | Claude | Put the service online and connect it to Eight Sleep. |
 | 3 | You | Enter your and Dani's Eight Sleep passwords on the hosting site, in fields Claude points you to. They're never stored in this code. |
 | 4 | Claude | Find the device ID of each bed and check that everything lines up. |
@@ -41,7 +41,9 @@ That's it. Repeated runs in the same place do nothing, so it's fine that these f
 
 ### How it decides
 
-- A bed is "home" when you're within `radius_miles` (30). Once a bed is home, it stays home until you're more than `radius_miles + hysteresis_miles` (35) away. That way, hovering near the boundary doesn't flip the beds.
+- The nearest bed is "home" as long as it's within `away_miles` (50). The two homes are about 71 miles apart in a straight line, so every point on the drive is within about 40 miles of one of them. That means the drive never counts as away.
+- To avoid flip-flopping near the halfway point, a bed that is already home keeps that status until the other bed is `switch_margin_miles` (10) closer.
+- Once a bed is home, you're only counted as away when you're more than `away_miles + hysteresis_miles` (55) from every bed.
 - It remembers the last area you were in: near bed A, near bed B, or near neither. It only calls Eight Sleep when that area changes.
   - **Arriving near a bed:** for each user, it makes that bed the account's active Pod, using the side that user is assigned to on that Pod, then turns away mode off.
   - **Far from both:** it turns away mode on for each user.
@@ -54,8 +56,9 @@ See `config.example.json`. Only the beds you list are managed; leave the guest b
 
 | Key | Default | Meaning |
 |---|---|---|
-| `radius_miles` | 30 | How close counts as "at" a bed |
-| `hysteresis_miles` | 5 | Extra distance before leaving a bed's area |
+| `away_miles` | 50 | Farther than this from every bed counts as away |
+| `switch_margin_miles` | 10 | How much closer the other bed must be before switching to it |
+| `hysteresis_miles` | 5 | Extra distance before going from home to away |
 | `when_away_from_all` | `"away"` | `"away"` or `"unchanged"` when you're near no bed |
 | `max_accuracy_miles` | none | Ignore location readings less accurate than this |
 

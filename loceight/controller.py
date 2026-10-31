@@ -48,22 +48,26 @@ class Result:
 
 
 def decide(cfg: Config, lat: float, lon: float, previous_home: str | None = None) -> Decision:
-    """Pick the bed you're near, if any.
+    """Pick the bed you're nearest to, or None if you're far from all of them.
 
-    A bed counts as "near" inside `radius_miles`. Once a bed is home it stays home
-    until you're more than `radius_miles + hysteresis_miles` away, so hovering at
-    the edge of the radius doesn't flip the beds back and forth.
+    - The nearest bed is home, as long as it's within `away_miles`. This means
+      the drive between two homes never counts as "away": partway there, the
+      bed you're heading to simply takes over.
+    - To avoid flip-flopping around the halfway point, an already-home bed keeps
+      the role until another bed is `switch_margin_miles` closer.
+    - Once home, you only count as away beyond `away_miles + hysteresis_miles`.
     """
     distances = {b.name: distance_miles(lat, lon, b.lat, b.lon) for b in cfg.beds}
-    candidates = []
-    for bed in cfg.beds:
-        limit = cfg.radius_miles
-        if bed.name == previous_home:
-            limit += cfg.hysteresis_miles
-        if distances[bed.name] <= limit:
-            candidates.append(bed.name)
-    home = min(candidates, key=distances.__getitem__) if candidates else None
-    return Decision(home=home, distances=distances)
+    nearest = min(distances, key=distances.__getitem__)
+    was_home = previous_home in distances
+
+    away_limit = cfg.away_miles + (cfg.hysteresis_miles if was_home else 0)
+    if distances[nearest] > away_limit:
+        return Decision(home=None, distances=distances)
+    if was_home and nearest != previous_home:
+        if distances[previous_home] - distances[nearest] < cfg.switch_margin_miles:
+            return Decision(home=previous_home, distances=distances)
+    return Decision(home=nearest, distances=distances)
 
 
 ClientFactory = Callable[[User], EightSleep]

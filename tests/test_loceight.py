@@ -13,15 +13,19 @@ from loceight.geo import distance_miles
 from loceight.server import make_handler, parse_location
 from loceight.state import RedisStore
 
-NYC = (40.7128, -74.0060)
-HAMPTONS = (40.9634, -72.1848)  # ~97 mi from NYC
-NEWARK = (40.7357, -74.1724)  # ~9 mi from NYC
+NYC = (40.7836, -73.9805)  # 2211 Broadway
+HAMPTONS = (41.7911, -74.2288)  # Accord, NY (~71 mi from NYC); name kept for brevity
+NEWARK = (40.7357, -74.1724)  # ~11 mi from NYC
+NEWBURGH = (41.5034, -74.0104)  # on the drive: 50 mi from NYC, 23 from Accord
+MIDWAY = (41.2873, -74.1047)  # about halfway between the homes
+ALBANY = (42.6526, -73.7562)  # 64 mi from Accord -> away
 LA = (34.0522, -118.2437)
 
 
 def make_cfg(**overrides):
     data = {
-        "radius_miles": 30,
+        "away_miles": 50,
+        "switch_margin_miles": 10,
         "hysteresis_miles": 5,
         "users": [
             {"name": "Me", "email": "me@example.com", "password": "x"},
@@ -79,18 +83,24 @@ class DecideTest(unittest.TestCase):
         self.assertEqual(decide(cfg, *HAMPTONS).home, "Beach")
         self.assertIsNone(decide(cfg, *LA).home)
 
-    def test_hysteresis(self):
+    def test_drive_between_homes_never_goes_away(self):
         cfg = make_cfg()
-        # ~32 miles from NYC: outside 30 mi radius but inside 30+5 hysteresis band.
-        point = (40.7128, -74.0060 + 32 / 52.4)
-        d = distance_miles(*NYC, *point)
-        self.assertTrue(30 < d < 35, d)
+        self.assertEqual(decide(cfg, *NEWBURGH).home, "Beach")
+        self.assertIn(decide(cfg, *MIDWAY).home, ("City", "Beach"))
+        self.assertEqual(decide(cfg, *ALBANY).home, None)
+
+    def test_switch_margin_prevents_flip_flop_at_halfway(self):
+        cfg = make_cfg()
+        d = decide(cfg, *MIDWAY).distances
+        self.assertLess(abs(d["City"] - d["Beach"]), 10)
+        self.assertEqual(decide(cfg, *MIDWAY, previous_home="City").home, "City")
+        self.assertEqual(decide(cfg, *MIDWAY, previous_home="Beach").home, "Beach")
+
+    def test_away_hysteresis(self):
+        cfg = make_cfg()
+        point = (NYC[0], NYC[1] - 52 / 52.4)  # ~52 mi west of NYC, ~60 from Accord
         self.assertIsNone(decide(cfg, *point).home)
         self.assertEqual(decide(cfg, *point, previous_home="City").home, "City")
-
-    def test_nearest_wins_when_radii_overlap(self):
-        cfg = make_cfg(radius_miles=200)
-        self.assertEqual(decide(cfg, *NEWARK).home, "City")
 
 
 class ControllerTest(unittest.TestCase):

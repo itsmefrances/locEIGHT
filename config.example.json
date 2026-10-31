@@ -1,5 +1,6 @@
 {
-  "radius_miles": 30,
+  "away_miles": 50,
+  "switch_margin_miles": 10,
   "hysteresis_miles": 5,
   "when_away_from_all": "away",
   "max_accuracy_miles": 3,

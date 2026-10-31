@@ -41,7 +41,8 @@ class Bed:
 
 @dataclass
 class Config:
-    radius_miles: float
+    away_miles: float
+    switch_margin_miles: float
     hysteresis_miles: float
     when_away_from_all: str  # "away" or "unchanged"
     users: list[User]
@@ -100,7 +101,8 @@ def parse(data: dict) -> Config:
 
     max_acc = data.get("max_accuracy_miles")
     return Config(
-        radius_miles=float(data.get("radius_miles", 30)),
+        away_miles=float(data.get("away_miles", 50)),
+        switch_margin_miles=float(data.get("switch_margin_miles", 10)),
         hysteresis_miles=float(data.get("hysteresis_miles", 5)),
         when_away_from_all=when,
         users=users,
