@@ -46,7 +46,11 @@ def make_handler(controller: Controller, token: str):
         server_version = "locEIGHT"
 
         def log_message(self, fmt, *args):
-            log.info("%s %s", self.address_string(), fmt % args)
+            pass  # default access log would record the token and exact coordinates
+
+        def log_request(self, code="-", size="-"):
+            path = urlparse(self.path).path  # drop the query string (token, lat/lon)
+            log.info("%s %s -> %s", self.command, path, code)
 
         def _send(self, code: int, body) -> None:
             data = json.dumps(body).encode()
